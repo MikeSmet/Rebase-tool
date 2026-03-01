@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>5 tijdreeksen uit 1 CSV + rebase (basis = 100)</title>
+
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    h1 { font-size: 18px; margin: 0 0 12px 0; }
+    .muted { color: #666; font-size: 12px; }
+    .error { color: #b00020; white-space: pre-wrap; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .pill { display: inline-block; padding: 2px 8px; border: 1px solid #ddd; border-radius: 999px; font-size: 12px; }
+    .small { font-size: 13px; }
+    input[type="range"] { width: min(820px, 100%); }
+
+    /* Layout: left column stays visible */
+    .layout {
+      display: grid;
+      grid-template-columns: 520px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .leftSticky { position: static; top: auto; }
+    }
+    .leftSticky {
+      position: sticky;
+      top: 12px;
+      align-self: start;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: calc(100vh - 24px);
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .plotBox { border: 1px solid #eee; border-radius: 10px; padding: 8px; background: #fff; }
+    .plotSmall { width: 100%; height: 200px; }
+
+    .plotBig { width: 100%; height: 560px; }
+
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; font-size: 13px; }
+    th { font-weight: 600; }
+    .nowrap { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <h1>1 CSV met tot 5 tijdreeksen: links origineel, rechts rebase naar 100 op gekozen basispunt</h1>
+
+  <div class="card" style="margin-bottom:12px;">
+    <div class="row">
+      <input id="fileInput" type="file" accept=".csv" />
+      <span class="muted">CSV: kolom 1 = tijd (1-2-3, datum, tekst), kolommen 2-6 = reeksen. Eerste rij mag headers bevatten.</span>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <label class="small"><input id="connectGaps" type="checkbox" checked /> Verbind gaten (connectgaps) in de figuren</label>
+    </div>
+    <div id="status" class="muted" style="margin-top:10px;"></div>
+    <div id="err" class="error" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="layout">
+    <!-- LEFT: five original plots (sticky) -->
+    <div class="leftSticky">
+      <div class="plotBox">
+        <div class="small"><strong id="title1">Reeks 1</strong></div>
+        <div id="plot1" class="plotSmall"></div>
+      </div>
+      <div class="plotBox">
+        <div class="small"><strong id="title2">Reeks 2</strong></div>
+        <div id="plot2" class="plotSmall"></div>
+      </div>
+      <div class="plotBox">
+        <div class="small"><strong id="title3">Reeks 3</strong></div>
+        <div id="plot3" class="plotSmall"></div>
+      </div>
+      <div class="plotBox">
+        <div class="small"><strong id="title4">Reeks 4</strong></div>
+        <div id="plot4" class="plotSmall"></div>
+      </div>
+      <div class="plotBox">
+        <div class="small"><strong id="title5">Reeks 5</strong></div>
+        <div id="plot5" class="plotSmall"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: rebased multi-series plot + slider + summary -->
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div class="card">
+        <h2 style="font-size:14px; margin:0 0 8px 0;">Rebase instellingen</h2>
+        <div class="row" style="gap:10px;">
+          <div class="nowrap"><span class="pill">Basis x</span> <span id="baseXLabel" class="small">-</span></div>
+          <div class="nowrap"><span class="pill">Gemeenschappelijke x-waarden</span> <span id="commonCount" class="small">0</span></div>
+        </div>
+        <div style="margin-top:10px;">
+          <input id="baseSlider" type="range" min="0" max="0" step="1" value="0" disabled />
+        </div>
+        <div class="muted" style="margin-top:8px;">
+          Slider gebruikt enkel x-waarden die voorkomen in alle reeksen die effectief data hebben.
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size:14px; margin:0 0 8px 0;">Rebased grafiek (basis = 100)</h2>
+        <div id="plotRebase" class="plotBig"></div>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size:14px; margin:0 0 8px 0;">% verandering op het einde (vanaf basis)</h2>
+        <div class="muted" style="margin-bottom:8px;">
+          Voor elke reeks: % verandering = (laatste indexwaarde na basis) - 100.
+        </div>
+        <div style="overflow:auto;">
+          <table id="summaryTable">
+            <thead>
+              <tr>
+                <th>Reeks</th>
+                <th>Basis x</th>
+                <th>Laatste x</th>
+                <th class="nowrap">Index (basis = 100)</th>
+                <th class="nowrap">% verandering</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+(() => {
+  const fileInput = document.getElementById('fileInput');
+  const connectGapsEl = document.getElementById('connectGaps');
+  const statusEl = document.getElementById('status');
+  const errEl = document.getElementById('err');
+
+  const baseSlider = document.getElementById('baseSlider');
+  const baseXLabel = document.getElementById('baseXLabel');
+  const commonCountEl = document.getElementById('commonCount');
+  const summaryTbody = document.querySelector('#summaryTable tbody');
+
+  const plotIds = ['plot1','plot2','plot3','plot4','plot5'];
+  const titleIds = ['title1','title2','title3','title4','title5'];
+
+  // State from CSV
+  // xDisplay: array for plotting x (numbers or strings)
+  // xKey: array of canonical keys used for matching/rebasing
+  // series: [{name, y: Array<number|null>}]
+  let xDisplay = [];
+  let xKey = [];
+  let series = [];
+
+  // For rebasing: consider only series that have at least one valid value
+  function presentSeries() {
+    return series.filter(s => s.y.some(v => v !== null && v !== undefined));
+  }
+
+  function resetAll() {
+    errEl.textContent = '';
+    statusEl.textContent = '';
+    baseXLabel.textContent = '-';
+    commonCountEl.textContent = '0';
+    baseSlider.disabled = true;
+    baseSlider.min = 0;
+    baseSlider.max = 0;
+    baseSlider.value = 0;
+    summaryTbody.innerHTML = '';
+
+    for (let i = 0; i < 5; i++) {
+      document.getElementById(titleIds[i]).textContent = `Reeks ${i+1}`;
+      Plotly.react(plotIds[i], [], smallLayout('tijd'), {responsive:true});
+    }
+    Plotly.react('plotRebase', [], rebaseLayout(), {responsive:true});
+  }
+
+  function smallLayout(xTitle) {
+    return {
+      margin: {l: 55, r: 10, t: 18, b: 30},
+      xaxis: {title: xTitle},
+      yaxis: {title: ''},
+      showlegend: false
+    };
+  }
+
+  function rebaseLayout() {
+    return {
+      margin: {l: 60, r: 20, t: 10, b: 55},
+      xaxis: {title: 'x'},
+      yaxis: {title: 'Index (basis = 100)', hoverformat: '.2f'},
+      hovermode: 'x unified',
+      legend: {orientation: 'h'}
+    };
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  function tryParseNumber(x) {
+    if (x === null || x === undefined || x === '') return null;
+    if (typeof x === 'number' && isFinite(x)) return x;
+
+    let t = String(x).trim().replace(/\s/g, '');
+    if (!t) return null;
+
+    const hasComma = t.includes(',');
+    const hasDot = t.includes('.');
+    if (hasComma && hasDot) {
+      const lastComma = t.lastIndexOf(',');
+      const lastDot = t.lastIndexOf('.');
+      if (lastComma > lastDot) t = t.replace(/\./g, '').replace(',', '.');
+      else t = t.replace(/,/g, '');
+    } else if (hasComma && !hasDot) {
+      t = t.replace(',', '.');
+    } else {
+      t = t.replace(/,/g, '');
+    }
+
+    const n = Number(t);
+    return isFinite(n) ? n : null;
+  }
+
+  // Avoid interpreting "1".."25" as dates.
+  function tryParseDate(x) {
+    if (x === null || x === undefined || x === '') return null;
+
+    const s = String(x).trim();
+    if (!s) return null;
+    if (/^\d+(\.\d+)?$/.test(s)) return null;
+
+    const looksDateLike =
+      /[\/\-\.]/.test(s) || /T/.test(s) || /:/.test(s) || /^[A-Za-z]{3,}/.test(s);
+    if (!looksDateLike) return null;
+
+    const d = new Date(s);
+    return isNaN(d) ? null : d;
+  }
+
+  function normaliseX(xRaw) {
+    // Returns:
+    // - display: value used in Plotly x
+    // - key: canonical key for matching across series
+    // - sortValue: for ordering
+    if (xRaw === null || xRaw === undefined) return {display:'', key:'', sortValue:''};
+
+    const s = String(xRaw).trim();
+    if (!s) return {display:'', key:'', sortValue:''};
+
+    const d = tryParseDate(s);
+    if (d) {
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2,'0');
+      const day = String(d.getUTCDate()).padStart(2,'0');
+      const iso = `${y}-${m}-${day}`;
+      return { display: iso, key: iso, sortValue: d.getTime() };
+    }
+
+    const n = tryParseNumber(s);
+    if (n !== null) return { display: n, key: String(n), sortValue: n };
+
+    return { display: s, key: s, sortValue: s };
+  }
+
+  function detectDelimiter(text) {
+    const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) || '';
+    const candidates = [';', ',', '\t'];
+    let best = ';';
+    let bestCount = -1;
+    for (const d of candidates) {
+      const c = (firstLine.match(new RegExp('\\' + d, 'g')) || []).length;
+      if (c > bestCount) { bestCount = c; best = d; }
+    }
+    return best;
+  }
+
+  async function readCSV(file) {
+    const text = await file.text();
+    const delimiter = detectDelimiter(text);
+
+    return new Promise((resolve, reject) => {
+      Papa.parse(text, {
+        delimiter,
+        skipEmptyLines: true,
+        complete: (res) => {
+          if (res.errors && res.errors.length) {
+            reject(new Error(res.errors.map(e => e.message).join('\n')));
+            return;
+          }
+          resolve({rows: res.data, delimiter});
+        },
+        error: (err) => reject(err)
+      });
+    });
+  }
+
+  function looksLikeHeaderRow(rows) {
+    if (!rows || rows.length < 2) return false;
+    const r0 = rows[0] || [];
+    const r1 = rows[1] || [];
+    let evidence = 0;
+    for (let j = 1; j < Math.min(6, r0.length); j++) {
+      const n0 = tryParseNumber(r0[j]);
+      const n1 = tryParseNumber(r1[j]);
+      if (n0 === null && n1 !== null) evidence++;
+    }
+    return evidence >= 1;
+  }
+
+  function computeCommonKeysForRebase(present) {
+    // Common x where ALL present series have non-missing y at that x.
+    // This ensures base exists for all rebased lines.
+    if (present.length === 0) return [];
+
+    const ok = new Set();
+    for (let i = 0; i < xKey.length; i++) {
+      const k = xKey[i];
+      let allHave = true;
+      for (const s of present) {
+        const v = s.y[i];
+        if (v === null || v === undefined) { allHave = false; break; }
+      }
+      if (allHave) ok.add(k);
+    }
+
+    // Preserve original order of xKey (which is CSV order)
+    const ordered = [];
+    const seen = new Set();
+    for (const k of xKey) {
+      if (ok.has(k) && !seen.has(k)) { ordered.push(k); seen.add(k); }
+    }
+    return ordered;
+  }
+
+  function renderSmallPlots(connectGaps) {
+    for (let j = 0; j < 5; j++) {
+      const s = series[j] || {name:`Reeks ${j+1}`, y:[]};
+      document.getElementById(titleIds[j]).textContent = s.name || `Reeks ${j+1}`;
+
+      const trace = {
+        type: 'scatter',
+        mode: 'lines',
+        x: xDisplay,
+        y: (s.y && s.y.length) ? s.y : [],
+        connectgaps: !!connectGaps,
+        name: s.name || `Reeks ${j+1}`
+      };
+
+      const hasData = s.y && s.y.some(v => v !== null && v !== undefined);
+      Plotly.react(plotIds[j], hasData ? [trace] : [], smallLayout('tijd'), {responsive:true});
+    }
+  }
+
+  function renderRebase(baseIdx, connectGaps) {
+    const present = presentSeries();
+    const common = computeCommonKeysForRebase(present);
+    commonCountEl.textContent = String(common.length);
+
+    if (common.length === 0) {
+      baseSlider.disabled = true;
+      baseSlider.min = 0; baseSlider.max = 0; baseSlider.value = 0;
+      baseXLabel.textContent = '-';
+      summaryTbody.innerHTML = '';
+      Plotly.react('plotRebase', [], rebaseLayout(), {responsive:true});
+      return;
+    }
+
+    const idx = Math.min(Math.max(0, baseIdx), common.length - 1);
+    baseSlider.disabled = false;
+    baseSlider.min = 0;
+    baseSlider.max = common.length - 1;
+    baseSlider.value = idx;
+
+    const baseKeyChosen = common[idx];
+    baseXLabel.textContent = String(baseKeyChosen);
+
+    // Find base index in arrays (first occurrence)
+    const basePos = xKey.indexOf(baseKeyChosen);
+
+    const traces = [];
+    summaryTbody.innerHTML = '';
+
+    for (const s of present) {
+      const baseVal = s.y[basePos];
+      if (baseVal === null || baseVal === undefined) continue;
+
+      const x = [];
+      const y = [];
+
+      for (let i = basePos; i < xDisplay.length; i++) {
+        const v = s.y[i];
+        x.push(xDisplay[i]);
+        if (v === null || v === undefined) y.push(null);
+        else y.push((v / baseVal) * 100);
+      }
+
+      traces.push({
+        type: 'scatter',
+        mode: 'lines',
+        name: s.name,
+        x,
+        y,
+        connectgaps: !!connectGaps
+      });
+
+      // last non-missing index value after base
+      let lastIdxVal = null;
+      let lastX = null;
+      for (let i = y.length - 1; i >= 0; i--) {
+        if (y[i] !== null && y[i] !== undefined) {
+          lastIdxVal = y[i];
+          lastX = x[i];
+          break;
+        }
+      }
+
+      if (lastIdxVal !== null) {
+        const pct = lastIdxVal - 100;
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          `<td>${escapeHtml(s.name)}</td>` +
+          `<td>${escapeHtml(baseKeyChosen)}</td>` +
+          `<td>${escapeHtml(lastX)}</td>` +
+          `<td>${Number(lastIdxVal).toFixed(2)}</td>` +
+          `<td>${Number(pct).toFixed(2)}%</td>`;
+        summaryTbody.appendChild(tr);
+      }
+    }
+
+    Plotly.react('plotRebase', traces, rebaseLayout(), {responsive:true});
+  }
+
+  async function parseAndRender(file) {
+    resetAll();
+    statusEl.textContent = 'CSV lezen...';
+
+    const {rows, delimiter} = await readCSV(file);
+    if (!rows || rows.length < 2) throw new Error('Te weinig rijen.');
+
+    const hasHeader = looksLikeHeaderRow(rows);
+    const startIdx = hasHeader ? 1 : 0;
+    const header = hasHeader ? (rows[0] || []) : [];
+
+    // Build x arrays in the original CSV order (do not sort)
+    xDisplay = [];
+    xKey = [];
+
+    // Build 5 series (some may be empty)
+    series = [];
+    for (let j = 1; j <= 5; j++) {
+      const name = hasHeader ? String(header[j] ?? `Reeks ${j}`).trim() : `Reeks ${j}`;
+      series.push({name, y: []});
+    }
+
+    let nRowsUsed = 0;
+    for (let i = startIdx; i < rows.length; i++) {
+      const r = rows[i] || [];
+      if (r.length < 2) continue;
+
+      const xi = normaliseX(r[0]);
+      if (!xi.key) continue;
+
+      xDisplay.push(xi.display);
+      xKey.push(xi.key);
+      nRowsUsed++;
+
+      for (let j = 1; j <= 5; j++) {
+        const yv = tryParseNumber(r[j]);
+        series[j-1].y.push(yv === null ? null : yv);
+      }
+    }
+
+    const present = presentSeries();
+    statusEl.textContent = `Ingelezen: ${file.name} (delimiter: "${delimiter}"). Rijen gebruikt: ${nRowsUsed}. Reeksen met data: ${present.length}.`;
+
+    const connectGaps = connectGapsEl.checked;
+    renderSmallPlots(connectGaps);
+
+    // Rebase: default base = earliest common basepoint (index 0)
+    renderRebase(0, connectGaps);
+  }
+
+  fileInput.addEventListener('change', async (e) => {
+    errEl.textContent = '';
+    const f = (e.target.files || [])[0];
+    if (!f) return;
+    try {
+      await parseAndRender(f);
+    } catch (err) {
+      errEl.textContent = String(err?.message || err);
+      statusEl.textContent = '';
+    }
+  });
+
+  baseSlider.addEventListener('input', () => {
+    const connectGaps = connectGapsEl.checked;
+    renderRebase(parseInt(baseSlider.value, 10) || 0, connectGaps);
+  });
+
+  connectGapsEl.addEventListener('change', () => {
+    const f = (fileInput.files || [])[0];
+    if (!f) return;
+    parseAndRender(f).catch(err => {
+      errEl.textContent = String(err?.message || err);
+      statusEl.textContent = '';
+    });
+  });
+
+  resetAll();
+})();
+</script>
+</body>
+</html>
